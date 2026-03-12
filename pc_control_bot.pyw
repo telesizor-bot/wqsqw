@@ -1081,7 +1081,7 @@ def callback_disconnect(call):
     target = call.data[5:]
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("✅ Да, отключить", callback_data=f"disc_confirm_{target}"),
+        InlineKeyboardButton("✅ Да, отключить", callback_data=f"dcon_{target}"),
         InlineKeyboardButton("❌ Отмена", callback_data="noop")
     )
     bot.edit_message_text(
@@ -1090,10 +1090,10 @@ def callback_disconnect(call):
         parse_mode='HTML', reply_markup=markup)
     bot.answer_callback_query(call.id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("disc_confirm_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dcon_"))
 def callback_disconnect_confirm(call):
     if not auth_cb(call): return
-    target = call.data[13:]
+    target = call.data[5:]
     bot.edit_message_text(f"🔌 Отключаю <b>{target}</b>...", call.message.chat.id, call.message.message_id, parse_mode='HTML')
     if target == PC_NAME:
         threading.Thread(target=execute_command, args=("disconnect",), daemon=True).start()
@@ -1107,7 +1107,7 @@ def cmd_disconnect(message):
     target = get_selected(message.chat.id)
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("✅ Да, отключить", callback_data=f"disc_confirm_{target}"),
+        InlineKeyboardButton("✅ Да, отключить", callback_data=f"dcon_{target}"),
         InlineKeyboardButton("❌ Отмена", callback_data="noop")
     )
     bot.reply_to(message,
