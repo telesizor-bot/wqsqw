@@ -396,7 +396,17 @@ def execute_command(cmd, args=""):
                 with open(name_file, "w", encoding="utf-8") as f:
                     f.write(new_name)
                 old_name = PC_NAME
-                bot.send_message(CHAT_ID, f"✅ ПК переименован: <b>{old_name}</b> → <b>{new_name}</b>\nПерезапусти бота чтобы применилось.", parse_mode='HTML')
+                bot.send_message(CHAT_ID, f"✅ ПК переименован: <b>{old_name}</b> → <b>{new_name}</b>\nПерезапускаюсь...", parse_mode='HTML')
+                time.sleep(1)
+                if getattr(sys, 'frozen', False):
+                    subprocess.Popen([sys.executable])
+                else:
+                    script_path = os.path.abspath(__file__)
+                    pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+                    if not os.path.exists(pythonw):
+                        pythonw = sys.executable
+                    subprocess.Popen([pythonw, script_path])
+                os._exit(0)
 
         elif cmd == "update":
             # args = прямая ссылка на новый .pyw файл
